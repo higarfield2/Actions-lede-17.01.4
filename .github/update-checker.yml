@@ -1,0 +1,70 @@
+#
+# Copyright (c) 2019-2021 P3TERX <https://p3terx.com>
+#
+# This is free software, licensed under the MIT License.
+# See /LICENSE for more information.
+#
+# https://github.com/P3TERX/Actions-OpenWrt
+# File: .github/workflows/update-checker.yml
+# Description: Source code update checker
+#
+
+name: Update Checker
+
+env:
+  REPO_URL: https://github.com/HiGarfield/lede-17.01.4-Mod
+  REPO_BRANCH: master
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+  schedule:
+    - cron: "00 20 * * *"
+
+jobs:
+  check:
+    runs-on: ubuntu-18.04
+
+    steps:
+      - name: Get Commit Hash
+        id: getHash
+        run: |
+          git clone --depth 1 $REPO_URL -b $REPO_BRANCH .
+          echo "::set-output name=commitHash::$(git rev-parse HEAD)"
+
+      - name: Compare Commit Hash
+        id: cacheHash
+        uses: actions/cache@v2
+        with:
+          path: .commitHash
+          key: HEAD-${{ steps.getHash.outputs.commitHash }}
+
+      - name: Save New Commit Hash
+        if: steps.cacheHash.outputs.cache-hit != 'true'
+        run: |
+          echo ${{ steps.getHash.outputs.commitHash }} | tee .commitHash
+          echo "LEDE_VER=$(cat version)" >>$GITHUB_ENV
+
+      - name: Delete workflow runs
+        if: steps.cacheHash.outputs.cache-hit != 'true'
+        uses: HiGarfield/delete-workflow-runs@main
+        with:
+          retain_days: 3
+          keep_minimum_runs: 0
+
+      - name: Remove old releases
+        if: steps.cacheHash.outputs.cache-hit != 'true'
+        uses: HiGarfield/delete-older-releases@v0.1.0
+        with:
+          keep_latest: 0
+          delete_tags: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger build
+        if: steps.cacheHash.outputs.cache-hit != 'true'
+        uses: HiGarfield/repository-dispatch@v1
+        with:
+          token: ${{ secrets.ACTIONS_TRIGGER_PAT }}
+          event-type: ${{ env.LEDE_VER }}
