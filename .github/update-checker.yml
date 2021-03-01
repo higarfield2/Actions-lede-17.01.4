@@ -46,13 +46,6 @@ jobs:
           echo ${{ steps.getHash.outputs.commitHash }} | tee .commitHash
           echo "LEDE_VER=$(cat version)" >>$GITHUB_ENV
 
-      - name: Delete workflow runs
-        if: steps.cacheHash.outputs.cache-hit != 'true'
-        uses: HiGarfield/delete-workflow-runs@main
-        with:
-          retain_days: 3
-          keep_minimum_runs: 0
-
       - name: Remove old releases
         if: steps.cacheHash.outputs.cache-hit != 'true'
         uses: HiGarfield/delete-older-releases@v0.1.0
