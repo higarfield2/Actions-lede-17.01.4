@@ -1,10 +1,10 @@
-name: Build LEDE y1s
+name: Build LEDE ghl-r-001
 
 on:
   repository_dispatch:
 
 env:
-  TARGET_DEVICE: y1s
+  TARGET_DEVICE: ghl-r-001
   TZ: Asia/Shanghai
 
 jobs:
