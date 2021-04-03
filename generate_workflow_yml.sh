@@ -12,7 +12,7 @@ mkdir -p ".github/workflows/"
 
 
 for file in conf/.config.*; do
-	cat /dev/null >"$file"
+	: >"$file"
 	dev_name="$(basename "$file" | sed 's/^\.config\.//')"
 	generate_device_yml "$dev_name"
 done
