@@ -7,10 +7,12 @@ generate_device_yml() {
 		>".github/workflows/build-lede-${device_name}.yml"
 }
 
+rm -rf ".github/workflows/"
 mkdir -p ".github/workflows/"
-rm -rf ".github/workflows/*"
+
 
 for file in conf/.config.*; do
+	cat /dev/null >"$file"
 	dev_name="$(basename "$file" | sed 's/^\.config\.//')"
 	generate_device_yml "$dev_name"
 done
