@@ -53,11 +53,11 @@ jobs:
           keep_latest: 0
           delete_tags: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.MY_TOKEN }}
 
       - name: Trigger build
         if: steps.cacheHash.outputs.cache-hit != 'true'
         uses: HiGarfield/repository-dispatch@v1
         with:
-          token: ${{ secrets.ACTIONS_TRIGGER_PAT }}
+          token: ${{ secrets.MY_TOKEN }}
           event-type: ${{ env.LEDE_VER }}

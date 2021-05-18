@@ -131,7 +131,7 @@ jobs:
         uses: HiGarfield/action-gh-release@v1
         if: steps.tag.outputs.status == 'success'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.MY_TOKEN }}
         with:
           tag_name: ${{ steps.tag.outputs.release_tag }}
           body_path: lede-17.01.4-Mod/release.txt
