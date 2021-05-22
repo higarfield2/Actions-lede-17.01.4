@@ -76,9 +76,8 @@ jobs:
           echo "::set-output name=status::success"
 
       - name: Upload firmware directory
-        working-directory: ${{ env.WORKING_DIR }}
         uses: actions/upload-artifact@master
-        if: steps.compile.outputs.status == 'success'
+        if: steps.compile.outputs.status == 'success'        
         with:
           name: ${{ env.LEDE_OUTPUT_NAME }}
           path: ${{ env.FIRMWARE }}
@@ -148,17 +147,15 @@ jobs:
       - name: Upload firmware to release
         uses: HiGarfield/action-gh-release@v1
         if: steps.tag.outputs.status == 'success'
-        working-directory: ${{ env.WORKING_DIR }}
         env:
           GITHUB_TOKEN: ${{ secrets.MY_TOKEN }}
         with:
           tag_name: ${{ steps.tag.outputs.release_tag }}
-          body_path: release.txt
+          body_path: ${{ env.WORKING_DIR }}/release.txt
           files: ${{ env.FIRMWARE }}/*
 
       - name: Remove old releases
         uses: HiGarfield/delete-older-releases@v0.1.0
-        working-directory: ${{ env.WORKING_DIR }}
         continue-on-error: true
         with:
           keep_latest: ${{ env.TOTAL_KEEP_NUMBER }}
