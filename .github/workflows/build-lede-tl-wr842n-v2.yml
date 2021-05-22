@@ -9,7 +9,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-18.04
+    runs-on: ubuntu-20.04
 
     steps:
       - name: Checkout
@@ -36,33 +36,36 @@ jobs:
           git clone --depth 1 https://github.com/HiGarfield/lede-17.01.4-Mod.git -b master lede-17.01.4-Mod
           ln -sf /workdir/lede-17.01.4-Mod $GITHUB_WORKSPACE/lede-17.01.4-Mod
 
-          cd $GITHUB_WORKSPACE/lede-17.01.4-Mod
-          LEDE_VERSION="$(cat version)"
+          WORKING_DIR="$GITHUB_WORKSPACE/lede-17.01.4-Mod"
+          echo "WORKING_DIR=${WORKING_DIR}" >>$GITHUB_ENV
+          cd "${WORKING_DIR}"
+          LEDE_VERSION="$(cat "${WORKING_DIR}/version")"
           echo "LEDE_VERSION=${LEDE_VERSION}" >>$GITHUB_ENV
           LEDE_OUTPUT_NAME="lede-${LEDE_VERSION}-${TARGET_DEVICE}"
           echo "LEDE_OUTPUT_NAME=${LEDE_OUTPUT_NAME}" >>$GITHUB_ENV
-          echo "FIRMWARE=$GITHUB_WORKSPACE/out" >> $GITHUB_ENV
+          echo "FIRMWARE=${WORKING_DIR}/out" >> $GITHUB_ENV
+
+          rm -f "${WORKING_DIR}/package/firmware/wireless-regdb/patches/*limit-tx-power.patch"
 
       - name: Load custom configuration
+        working-directory: ${{ env.WORKING_DIR }}
         run: |
-          cd lede-17.01.4-Mod
-          rm -f package/firmware/wireless-regdb/patches/*limit-tx-power.patch   
           ./clean_all.sh
-          cp -f "conf/.config.$TARGET_DEVICE" .config    
+          cp -f "conf/.config.$TARGET_DEVICE" .config        
           make defconfig V=s
 
       - name: Download package
         id: package
+        working-directory: ${{ env.WORKING_DIR }}
         run: |
-          cd lede-17.01.4-Mod
           make download -j8 || make download -j1 V=s
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
 
       - name: Compile firmware
         id: compile
+        working-directory: ${{ env.WORKING_DIR }}
         run: |
-          cd lede-17.01.4-Mod
           echo -e "$(($(nproc) + 1)) thread compile"
           make -j$(($(nproc) + 1)) || make -j1 V=s
           rm -rf ${FIRMWARE}
@@ -73,6 +76,7 @@ jobs:
           echo "::set-output name=status::success"
 
       - name: Upload firmware directory
+        working-directory: ${{ env.WORKING_DIR }}
         uses: actions/upload-artifact@master
         if: steps.compile.outputs.status == 'success'
         with:
@@ -82,6 +86,7 @@ jobs:
       - name: Upload firmware to cowtransfer
         id: cowtransfer
         if: steps.compile.outputs.status == 'success'
+        working-directory: ${{ env.WORKING_DIR }}
         continue-on-error: true
         run: |
           curl -fsSL git.io/file-transfer | sh
@@ -92,6 +97,7 @@ jobs:
       - name: Upload firmware to CatBox
         id: catbox
         if: steps.compile.outputs.status == 'success'
+        working-directory: ${{ env.WORKING_DIR }}
         continue-on-error: true
         run: |
           curl -fsSL git.io/file-transfer | sh
@@ -102,6 +108,7 @@ jobs:
       - name: Upload firmware to anonfiles
         id: anonfiles
         if: steps.compile.outputs.status == 'success'
+        working-directory: ${{ env.WORKING_DIR }}
         continue-on-error: true
         run: |
           upfile="${FIRMWARE}/${LEDE_OUTPUT_NAME}.bin"
@@ -112,6 +119,7 @@ jobs:
       - name: Upload firmware to anonymousfiles
         id: anonymousfiles
         if: steps.compile.outputs.status == 'success'
+        working-directory: ${{ env.WORKING_DIR }}
         continue-on-error: true
         run: |
           upfile="${FIRMWARE}/${LEDE_OUTPUT_NAME}.bin"
@@ -121,29 +129,39 @@ jobs:
 
       - name: Generate release tag
         id: tag
+        working-directory: ${{ env.WORKING_DIR }}
         run: |
           echo "::set-output name=release_tag::${LEDE_OUTPUT_NAME}"
-          cd $GITHUB_WORKSPACE/lede-17.01.4-Mod
-          work_dir="$PWD"
-          touch "$work_dir/release.txt"
-          echo "🔗 [奶牛快传下载](${{ steps.cowtransfer.outputs.url }})" >> "$work_dir/release.txt"
-          echo "🔗 [CatBox下载](${{ steps.catbox.outputs.url }})" >> "$work_dir/release.txt"
-          echo "🔗 [anonfiles下载](${{ steps.anonfiles.outputs.url }})" >> "$work_dir/release.txt"
-          echo "🔗 [AnonymousFiles下载](${{ steps.anonymousfiles.outputs.url }})" >> "$work_dir/release.txt"
+          touch "$WORKING_DIR/release.txt"
+          echo "🔗 [奶牛快传下载](${{ steps.cowtransfer.outputs.url }})" >> "$WORKING_DIR/release.txt"
+          echo "🔗 [CatBox下载](${{ steps.catbox.outputs.url }})" >> "$WORKING_DIR/release.txt"
+          echo "🔗 [anonfiles下载](${{ steps.anonfiles.outputs.url }})" >> "$WORKING_DIR/release.txt"
+          echo "🔗 [AnonymousFiles下载](${{ steps.anonymousfiles.outputs.url }})" >> "$WORKING_DIR/release.txt"
           cd "${FIRMWARE}"
-          echo "" >> "$work_dir/release.txt"
-          echo "文件MD5校验：" >> "$work_dir/release.txt"
-          md5sum *.bin | awk '{print $2,$1}' >> "$work_dir/release.txt"
-          echo "" >> "$work_dir/release.txt"
-          echo "若以上链接过期失效，请在以下Assets中下载文件。" >> "$work_dir/release.txt"
+          echo "" >> "$WORKING_DIR/release.txt"
+          echo "文件MD5校验：" >> "$WORKING_DIR/release.txt"
+          md5sum *.bin | awk '{print $2,$1}' >> "$WORKING_DIR/release.txt"
+          echo "" >> "$WORKING_DIR/release.txt"
+          echo "以上所有链接的文件均相同，不同网盘过期时间不同，仅需下载其中一个链接即可。若以上链接均过期失效或无法打开，请在以下Assets中下载文件。下载后请核对文件MD5校验。" >> "$WORKING_DIR/release.txt"
           echo "::set-output name=status::success"
 
       - name: Upload firmware to release
         uses: HiGarfield/action-gh-release@v1
         if: steps.tag.outputs.status == 'success'
+        working-directory: ${{ env.WORKING_DIR }}
         env:
           GITHUB_TOKEN: ${{ secrets.MY_TOKEN }}
         with:
           tag_name: ${{ steps.tag.outputs.release_tag }}
-          body_path: lede-17.01.4-Mod/release.txt
+          body_path: release.txt
           files: ${{ env.FIRMWARE }}/*
+
+      - name: Remove old releases
+        uses: HiGarfield/delete-older-releases@v0.1.0
+        working-directory: ${{ env.WORKING_DIR }}
+        continue-on-error: true
+        with:
+          keep_latest: ${{ env.TOTAL_KEEP_NUMBER }}
+          delete_tags: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.MY_TOKEN }}

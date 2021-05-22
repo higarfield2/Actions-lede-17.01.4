@@ -8,7 +8,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-18.04
+    runs-on: ubuntu-20.04
 
     steps:
       - name: Checkout
@@ -35,28 +35,35 @@ jobs:
           git clone --depth 1 https://github.com/HiGarfield/lede-17.01.4-Mod.git -b master lede-17.01.4-Mod
           ln -sf /workdir/lede-17.01.4-Mod $GITHUB_WORKSPACE/lede-17.01.4-Mod
 
-          LEDE_OUTPUT_NAME="lede-$(cat $GITHUB_WORKSPACE/lede-17.01.4-Mod/version)-dl"
+          WORKING_DIR="$GITHUB_WORKSPACE/lede-17.01.4-Mod"
+          echo "WORKING_DIR=${WORKING_DIR}" >>$GITHUB_ENV          
+          cd "${WORKING_DIR}"
+          LEDE_VERSION="$(cat "${WORKING_DIR}/version")"
+          echo "LEDE_VERSION=${LEDE_VERSION}" >>$GITHUB_ENV
+          LEDE_OUTPUT_NAME="lede-${LEDE_VERSION}-dl"
           echo "LEDE_OUTPUT_NAME=${LEDE_OUTPUT_NAME}" >>$GITHUB_ENV
 
-      - name: Download
+     - name: Download
         id: download
+        working-directory: ${{ env.WORKING_DIR }}
         run: |
-          cd lede-17.01.4-Mod
           ./download_all.sh
-          zip -r "${LEDE_OUTPUT_NAME}.zip" dl
+          zip -j "${LEDE_OUTPUT_NAME}.zip" dl/*
           echo "::set-output name=status::success"
 
       - name: Upload dl directory
         uses: actions/upload-artifact@master
         if: steps.download.outputs.status == 'success'
+        working-directory: ${{ env.WORKING_DIR }}
         with:
           name: ${{ env.LEDE_OUTPUT_NAME }}
-          path: lede-17.01.4-Mod/dl
+          path: dl
 
       - name: Create release
         id: create_release
         uses: actions/create-release@v1
         if: steps.download.outputs.status == 'success'
+        working-directory: ${{ env.WORKING_DIR }}
         env:
           GITHUB_TOKEN: ${{ secrets.MY_TOKEN }}
         with:
@@ -69,10 +76,20 @@ jobs:
         id: upload-release-asset
         uses: actions/upload-release-asset@v1
         if: steps.download.outputs.status == 'success'
+        working-directory: ${{ env.WORKING_DIR }}
         env:
           GITHUB_TOKEN: ${{ secrets.MY_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./lede-17.01.4-Mod/${{ env.LEDE_OUTPUT_NAME }}.zip
+          asset_path: ./${{ env.LEDE_OUTPUT_NAME }}.zip
           asset_name: ${{ env.LEDE_OUTPUT_NAME }}.zip
           asset_content_type: application/zip
+
+      - name: Remove old releases
+        uses: HiGarfield/delete-older-releases@v0.1.0
+        continue-on-error: true
+        with:
+          keep_latest: ${{ env.TOTAL_KEEP_NUMBER }}
+          delete_tags: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.MY_TOKEN }}
