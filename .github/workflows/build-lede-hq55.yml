@@ -1,10 +1,10 @@
-name: Build LEDE hq55-v1
+name: Build LEDE hq55
 
 on:
   repository_dispatch:
 
 env:
-  TARGET_DEVICE: hq55-v1
+  TARGET_DEVICE: hq55
   TZ: Asia/Shanghai
 
 jobs:
