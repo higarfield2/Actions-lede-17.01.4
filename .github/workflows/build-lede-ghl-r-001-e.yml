@@ -51,7 +51,7 @@ jobs:
           echo "LEDE_OUTPUT_NAME=${LEDE_OUTPUT_NAME}" >>$GITHUB_ENV
           echo "FIRMWARE=${WORKING_DIR}/out" >> $GITHUB_ENV
 
-          rm -f "${WORKING_DIR}/package/firmware/wireless-regdb/patches/*limit-tx-power.patch"
+          rm -f "${WORKING_DIR}/package/firmware/wireless-regdb/patches/501-limit-tx-power.patch"
 
           cp -f "${WORKING_DIR}/.github/backup/download.pl" "${WORKING_DIR}/scripts/download.pl"
 
