@@ -20,7 +20,7 @@ on:
     branches: [master]
   workflow_dispatch:
   schedule:
-    - cron: "00 20 * * *"
+    - cron: "00 * * * *"
 
 jobs:
   check:
