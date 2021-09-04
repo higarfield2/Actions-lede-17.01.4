@@ -18,7 +18,10 @@ jobs:
           access_token: ${{ secrets.MY_TOKEN }}
 
       - name: Checkout
-        uses: actions/checkout@master
+        uses: actions/checkout@v2
+        with:
+          ref: master
+          fetch-depth: 0
 
       - name: Initialization environment
         env:
@@ -50,6 +53,12 @@ jobs:
           echo "LEDE_OUTPUT_NAME=${LEDE_OUTPUT_NAME}" >>$GITHUB_ENV
 
           cp -f "${WORKING_DIR}/.github/backup/download.pl" "${WORKING_DIR}/scripts/download.pl"
+
+      - name: cache
+        uses: HiGarfield/cachewrtbuild@main
+        with:
+          ccache: 'true'
+          prefix: ${{ env.WORKING_DIR }}
 
       - name: Download
         id: download
