@@ -5,6 +5,7 @@ on:
 
 env:
   TOTAL_KEEP_NUMBER: template_total_keep_number_please_replace
+  TZ: Asia/Shanghai
 
 jobs:
   build:

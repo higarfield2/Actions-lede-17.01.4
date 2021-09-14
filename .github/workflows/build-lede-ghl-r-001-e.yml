@@ -6,6 +6,7 @@ on:
 env:
   TARGET_DEVICE: ghl-r-001-e
   TOTAL_KEEP_NUMBER: 25
+  TZ: Asia/Shanghai
 
 jobs:
   build:

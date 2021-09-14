@@ -6,6 +6,7 @@ on:
 env:
   TARGET_DEVICE: template_device_please_replace
   TOTAL_KEEP_NUMBER: template_total_keep_number_please_replace
+  TZ: Asia/Shanghai
 
 jobs:
   build:

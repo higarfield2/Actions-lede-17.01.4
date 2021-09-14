@@ -5,6 +5,7 @@ on:
 
 env:
   TOTAL_KEEP_NUMBER: 25
+  TZ: Asia/Shanghai
 
 jobs:
   build:
