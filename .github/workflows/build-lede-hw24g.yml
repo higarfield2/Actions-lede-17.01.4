@@ -1,10 +1,10 @@
-name: Build LEDE ac1200
+name: Build LEDE hw24g
 
 on:
   repository_dispatch:
 
 env:
-  TARGET_DEVICE: ac1200
+  TARGET_DEVICE: hw24g
   TOTAL_KEEP_NUMBER: 25
   TZ: Asia/Shanghai
 
