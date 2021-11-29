@@ -321,7 +321,7 @@ jobs:
           cd "${WORKING_DIR}"
           LEDE_VERSION="$(cat "${WORKING_DIR}/version")"
           echo "LEDE_VERSION=${LEDE_VERSION}" >>$GITHUB_ENV
-          LEDE_OUTPUT_NAME="lede-${LEDE_VERSION}-${TARGET_DEVICE}"
+          LEDE_OUTPUT_NAME="dl-${LEDE_VERSION}"
           echo "LEDE_OUTPUT_NAME=${LEDE_OUTPUT_NAME}" >>$GITHUB_ENV
           OUTPUT_DIR="${WORKING_DIR}/out"
           echo "OUTPUT_DIR=${OUTPUT_DIR}" >> $GITHUB_ENV
