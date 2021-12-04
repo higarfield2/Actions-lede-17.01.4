@@ -138,7 +138,6 @@ jobs:
   dl:
     name: dl
     runs-on: ubuntu-20.04
-    needs: [ build ]
     steps:
       - name: Initialize token
         env:
