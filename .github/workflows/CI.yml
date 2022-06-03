@@ -212,13 +212,13 @@ jobs:
           sha256sum "${OUTPUT_DIR}/${LEDE_OUTPUT_NAME}.zip" | awk '{print $1}' >"${OUTPUT_DIR}/${LEDE_OUTPUT_NAME}.zip.sha256sum"
           echo "::set-output name=status::success"
 
-      - name: Upload images to Releases
-        if: ${{ steps.compile.outputs.status == 'success' }}
+      - name: Upload assets to Releases
+        if: ${{ steps.download.outputs.status == 'success' }}
         uses: HiGarfield/upload-to-github-release@v1
         env:
           GITHUB_TOKEN: ${{ env.MY_TOKEN }}
         with:
-          file: ${{ env.FIRMWARE }}/*
+          file: ${{ env.OUTPUT_DIR }}/*
           overwrite: true
           tag_name: ${{ env.LEDE_VERSION }}
           draft: false
