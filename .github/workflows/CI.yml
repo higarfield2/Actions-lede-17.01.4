@@ -11,7 +11,7 @@ concurrency:
 jobs:
   build:
     name: build
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     env:
       TARGET_DEVICE: ${{ matrix.target }}
     strategy:
@@ -37,26 +37,13 @@ jobs:
           ref: master
           fetch-depth: 0
 
-      - name: Initialize environment
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          sudo swapoff -a
-          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          sudo -E apt-get -qq update
-          sudo -E apt-get -qq install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs gcc-multilib g++-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler coreutils aria2
-          sudo -E apt-get -qq autoremove --purge
-          sudo -E apt-get -qq clean
-          sudo mkdir -p /workdir
-          sudo chown $USER:$GROUPS /workdir
-
       - name: Clone source code
-        working-directory: /workdir
+        working-directory: ${{ github.workspace }}
         run: |
-          df -hT $PWD
           git clone https://github.com/HiGarfield/lede-17.01.4-Mod.git -b master lede-17.01.4-Mod
-          ln -sf /workdir/lede-17.01.4-Mod $GITHUB_WORKSPACE/lede-17.01.4-Mod
 
+      - name: Set environment variables
+        run: |
           WORKING_DIR="$GITHUB_WORKSPACE/lede-17.01.4-Mod"
           echo "WORKING_DIR=${WORKING_DIR}" >>$GITHUB_ENV
           cd "${WORKING_DIR}"
@@ -66,9 +53,24 @@ jobs:
           echo "LEDE_OUTPUT_NAME=${LEDE_OUTPUT_NAME}" >>$GITHUB_ENV
           echo "FIRMWARE=${WORKING_DIR}/out" >> $GITHUB_ENV
 
-          rm -f "${WORKING_DIR}/package/firmware/wireless-regdb/patches/501-limit-tx-power.patch"
+      - name: Initialize environment
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo swapoff -a
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install aria2
+          sudo cp -f ".github/backup/apt-fast" /usr/local/sbin/apt-fast
+          sudo -E apt-fast -y -qq install build-essential gcc-9 g++-9 asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3 python2.7 unzip zlib1g-dev lib32gcc-s1 libc6-dev-i386 subversion flex uglifyjs git-core gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler g++-multilib antlr3 gperf wget curl swig rsync coreutils
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          sudo -E update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 9
+          sudo -E update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-9 9
 
-          cp -f "${WORKING_DIR}/.github/backup/download.pl" "${WORKING_DIR}/scripts/download.pl"
+          rm -f "package/firmware/wireless-regdb/patches/501-limit-tx-power.patch"
+          cp -f ".github/backup/download.pl" "scripts/download.pl"
 
       - name: Get architecture
         working-directory: ${{ env.WORKING_DIR }}
@@ -114,6 +116,12 @@ jobs:
           for f in *.bin; do sha256sum "$f" | awk '{print $1}' >"${f}.sha256sum"; done
           echo "::set-output name=status::success"
 
+      - name: Cancel Workflow on failure
+        if: failure()
+        uses: HiGarfield/cancel-action@master
+        with:
+          token: ${{ env.MY_TOKEN }}
+
       - name: Upload images to Releases
         if: ${{ steps.compile.outputs.status == 'success' }}
         uses: HiGarfield/upload-to-github-release@v1
@@ -136,7 +144,7 @@ jobs:
 
   dl:
     name: dl
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
       - name: Initialize token
         env:
@@ -156,26 +164,13 @@ jobs:
           ref: master
           fetch-depth: 0
 
-      - name: Initialize environment
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          sudo swapoff -a
-          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          sudo -E apt-get -qq update
-          sudo -E apt-get -qq install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs gcc-multilib g++-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler coreutils aria2
-          sudo -E apt-get -qq autoremove --purge
-          sudo -E apt-get -qq clean
-          sudo mkdir -p /workdir
-          sudo chown $USER:$GROUPS /workdir
-
       - name: Clone source code
-        working-directory: /workdir
+        working-directory: ${{ github.workspace }}
         run: |
-          df -hT $PWD
           git clone https://github.com/HiGarfield/lede-17.01.4-Mod.git -b master lede-17.01.4-Mod
-          ln -sf /workdir/lede-17.01.4-Mod $GITHUB_WORKSPACE/lede-17.01.4-Mod
 
+      - name: Set environment variables
+        run: |
           WORKING_DIR="$GITHUB_WORKSPACE/lede-17.01.4-Mod"
           echo "WORKING_DIR=${WORKING_DIR}" >>$GITHUB_ENV
           cd "${WORKING_DIR}"
@@ -186,7 +181,23 @@ jobs:
           OUTPUT_DIR="${WORKING_DIR}/out"
           echo "OUTPUT_DIR=${OUTPUT_DIR}" >> $GITHUB_ENV
 
-          cp -f "${WORKING_DIR}/.github/backup/download.pl" "${WORKING_DIR}/scripts/download.pl"
+      - name: Initialize environment
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo swapoff -a
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install aria2
+          sudo cp -f ".github/backup/apt-fast" /usr/local/sbin/apt-fast
+          sudo -E apt-fast -y -qq install build-essential gcc-9 g++-9 asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3 python2.7 unzip zlib1g-dev lib32gcc-s1 libc6-dev-i386 subversion flex uglifyjs git-core gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler g++-multilib antlr3 gperf wget curl swig rsync coreutils
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          sudo -E update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 9
+          sudo -E update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-9 9
+
+          cp -f ".github/backup/download.pl" "scripts/download.pl"
 
       - name: Download
         id: download
