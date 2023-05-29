@@ -11,8 +11,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  do_repository_dispatch:
+    name: repository dispatch
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Repository dispatch
+        if: ${{ github.repository == 'HiGarfield/lede-17.01.4-Mod' && github.event_name == 'push' }}
+        uses: HiGarfield/repository-dispatch@v2
+        with:
+          token: ${{ secrets.MY_TOKEN }}
+          repository: ${{ secrets.SECOND_REPO }}
+          event-type: ${{ github.event.head_commit.message }}
+
   build:
     name: build
+    needs: [ do_repository_dispatch ]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -32,23 +45,21 @@ jobs:
           fetch-depth: 0
 
       - name: Clone source code
-        if: ${{ github.repository != env.SOURCE_REPO }}
         working-directory: ${{ github.workspace }}
         run: |
-          git clone "https://github.com/$SOURCE_REPO" -b master source
-
-      - name: Set environment variables
-        run: |
-          echo "MY_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
-
-          if [ "$GITHUB_REPOSITORY" == "$SOURCE_REPO" ]; then
+          if [ -f "$GITHUB_WORKSPACE/version" ]; then
             WORKING_DIR="$GITHUB_WORKSPACE"
           else
+            git clone "https://github.com/$SOURCE_REPO" -b master source
             WORKING_DIR="$GITHUB_WORKSPACE/source"
           fi
           echo "WORKING_DIR=${WORKING_DIR}" >>$GITHUB_ENV
 
-          cd "${WORKING_DIR}"
+      - name: Set environment variables
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          echo "MY_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
+          
           LEDE_VERSION="$(cat "${WORKING_DIR}/version")"
           echo "LEDE_VERSION=${LEDE_VERSION}" >>$GITHUB_ENV
           
@@ -73,9 +84,9 @@ jobs:
           sudo -E apt-get -qq clean
           sudo -E update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 9
           sudo -E update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-9 9
-
+          
           rm -f "package/firmware/wireless-regdb/patches/501-limit-tx-power.patch"
-
+          
           sed -i 's/HOST_BUILD_PARALLEL ?=/HOST_BUILD_PARALLEL ?= 1/g' include/host-build.mk
           sed -i 's/PKG_BUILD_PARALLEL ?=/PKG_BUILD_PARALLEL ?= 1/g' include/package.mk
 
