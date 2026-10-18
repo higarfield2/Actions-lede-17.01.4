@@ -1,8 +1,63 @@
+# CI for the LEDE 17.01 firmware build.
+#
+# One workflow serves two repository layouts, and the layout is decided by
+# the tree the runner checks out:
+#
+#   * the source repository: the checkout root holds the version file and
+#     conf/, so every job builds inside the checkout;
+#   * a repository that carries .github only: there is no version file, so
+#     the composite actions clone the source tree from SOURCE_REPO into
+#     source/ first and every job builds inside that clone.
+#
+# From the moment the tree is resolved the two layouts run the very same
+# steps, which is what lets the whole .github directory be copied verbatim
+# into the bare repository. A push to the source repository builds here and
+# notifies the downstream repository; the repository_dispatch created by
+# that notification is what starts the same build there.
+#
+# Every device under conf/.config.<name> is built on its own runner. The
+# tools/ and toolchain/ stages are shared: they depend on a handful of
+# .config symbols only, so they are built once per toolchain group instead
+# of once per device and handed over through the Actions cache.
+#
+#   repository-dispatch  notifies the downstream repository (source repo only)
+#   generate-matrix      one entry per device plus one per toolchain group
+#   toolchain            builds tools/ + toolchain/ once per group, saves cache
+#   download-sources     fills dl/ once and publishes it
+#   build-firmware       restores the toolchain cache, builds one device
+#   create-release       publishes every artifact under the version tag
+#   cleanup              keeps only the newest release
+#
+# The layout resolution and the cache contract live in .github/actions/:
+# enumerate-targets produces the device matrix and the tree digests,
+# setup-build-env resolves the working directory and the toolchain cache
+# key. Both workflows share them, so a key can never drift between the job
+# that writes it and the job that reads it.
+
 name: CI
 
 on:
+  push:
+    branches: [master]
+  # Sent by the repository-dispatch job below, which only runs in the
+  # source repository. The event type is the version being built, read
+  # from the version file, so it changes with every release and no
+  # literal types filter can match it; the version is verified against
+  # the tree this run resolves in generate-matrix instead. The source
+  # repository never receives a dispatch itself, so the chain stays
+  # one-directional.
   repository_dispatch:
   workflow_dispatch:
+    inputs:
+      targets:
+        description: 'Devices to build (conf/.config.<name> suffixes, comma separated) or "all"'
+        required: false
+        default: all
+      force_toolchain:
+        description: Rebuild the toolchain even when the cache already holds it
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -12,190 +67,337 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # Cloned by the composite actions when the checkout carries .github only.
+  # Without this value the clone URL would be empty and every job would
+  # fail while resolving the tree.
   SOURCE_REPO: HiGarfield/lede-17.01.4-Mod
 
 jobs:
-  repository_dispatch:
-    if: ${{ github.repository == 'HiGarfield/lede-17.01.4-Mod' && github.event_name == 'push' }}
-    runs-on: ubuntu-24.04
+  # Only the source repository notifies the downstream one. The guard is
+  # what keeps the dispatch chain from looping: in the downstream
+  # repository the same workflow runs on a repository_dispatch event, and
+  # both conditions are false there.
+  repository-dispatch:
+    if: github.repository == 'HiGarfield/lede-17.01.4-Mod' && github.event_name == 'push'
+    runs-on: ubuntu-26.04
     permissions: {}
     steps:
-      - uses: actions/checkout@main
+      - name: Check out the repository
+        uses: actions/checkout@main
 
-      - name: Get commit title
-        id: title
+      # The event type is the version being built. A repository_dispatch
+      # event_type accepts letters, digits and . _ - only and is limited
+      # to 100 characters; the version file holds a plain timestamp, so
+      # this only guards against a malformed file producing a dispatch
+      # the API would reject.
+      - name: Read the version to dispatch
+        id: version
         run: |
-          commit_title=$(git log -1 --pretty=format:%s | cut -c1-100)
-          echo "commit_title=$commit_title" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          version=$(cat version)
+          if [ -z "${version}" ]; then
+            echo "::error::the version file is empty"
+            exit 1
+          fi
+          case "${version}" in
+            *[!A-Za-z0-9._-]*)
+              echo "::error::version '${version}' contains characters the dispatch event_type cannot carry"
+              exit 1
+              ;;
+          esac
+          if [ "${#version}" -gt 100 ]; then
+            echo "::error::version exceeds the 100 character event_type limit"
+            exit 1
+          fi
+          echo "event_type=${version}" >> "${GITHUB_OUTPUT}"
 
-      - uses: HiGarfield/repository-dispatch@main
+      - name: Notify the downstream repository
+        uses: HiGarfield/repository-dispatch@main
         with:
           token: ${{ secrets.MY_TOKEN }}
           repository: ${{ secrets.SECOND_REPO }}
-          event-type: ${{ steps.title.outputs.commit_title }}
+          event-type: ${{ steps.version.outputs.event_type }}
+          # The webhook payload of a repository_dispatch does not carry the
+          # event type, so the version travels in the client payload as
+          # well: that is the only channel the downstream workflow can read
+          # it from, and it is what the version check there verifies.
+          client-payload: '{"version":"${{ steps.version.outputs.event_type }}"}'
 
-  generate_matrix:
-    runs-on: ubuntu-24.04
+  generate-matrix:
+    runs-on: ubuntu-26.04
     outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-      lede_version: ${{ steps.set-matrix.outputs.lede_version }}
+      targets: ${{ steps.targets.outputs.targets }}
+      tc-groups: ${{ steps.targets.outputs.tc-groups }}
+      lede_version: ${{ steps.targets.outputs.version }}
+      tools-hash: ${{ steps.targets.outputs.tools-hash }}
+      dl-hash: ${{ steps.targets.outputs.dl-hash }}
     steps:
-      - uses: actions/checkout@main
-
-      - id: set-matrix
-        run: |
-          if [ -f version ]; then
-            conf_dir=conf
-            v=$(cat version)
-          else
-            git clone https://github.com/${SOURCE_REPO}.git source
-            conf_dir=source/conf
-            v=$(cat source/version)
-          fi
-          echo "lede_version=$v" >> $GITHUB_OUTPUT
-          config_files=$(ls $conf_dir/.config.* 2>/dev/null)
-          if [ -z "$config_files" ]; then
-            echo "Error: no .config.* files found in $conf_dir" >&2
-            exit 1
-          fi
-          device_targets=$(echo "$config_files" | sed 's|.*/\.config\.||' | sort)
-          targets=$(echo "$device_targets" | jq -R . | jq -sc '["dl"] + .')
-          echo "matrix=$targets" >> $GITHUB_OUTPUT
-
-  build:
-    needs: [generate_matrix]
-    runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        target: ${{ fromJson(needs.generate_matrix.outputs.matrix) }}
-
-    env:
-      TARGET_DEVICE: ${{ matrix.target }}
-      LEDE_VERSION: ${{ needs.generate_matrix.outputs.lede_version }}
-
-    steps:
-      - uses: actions/checkout@main
+      # Full history: the toolchain key carries the last commit that
+      # touched tools/ or toolchain/, and the dl key hashes the trees that
+      # decide which sources are downloaded. Every other job checks out a
+      # single commit and receives both values as job outputs.
+      - name: Check out the repository with full history
+        uses: actions/checkout@main
         with:
           fetch-depth: 0
 
-      - name: Prepare source
+      - name: Enumerate the devices and the toolchain groups
+        id: targets
+        uses: ./.github/actions/enumerate-targets
+        with:
+          source-repo: ${{ env.SOURCE_REPO }}
+          requested: ${{ inputs.targets || 'all' }}
+
+      # The source repository sends the version it is building both as the
+      # dispatch event type and inside the client payload; the webhook
+      # payload of a repository_dispatch does not carry the event type, so
+      # the client payload is the channel that can be read here. Checking
+      # it against the version of the tree this run resolved rejects a
+      # dispatch carrying any other version, which is what limits a build
+      # here to a dispatch from the source repository. A push and a
+      # workflow_dispatch carry no payload and skip the check; both
+      # already require write access. When a newer commit lands between
+      # the dispatch and the clone the versions differ and the run fails;
+      # the dispatch of that newer commit builds it instead.
+      - name: Verify the dispatch carries the version being built
+        if: github.event_name == 'repository_dispatch'
+        env:
+          EVENT_TYPE: ${{ github.event.client_payload.version }}
+          EXPECTED_VERSION: ${{ steps.targets.outputs.version }}
         run: |
-          if [ -f version ]; then
-            echo "WORKING_DIR=$PWD" >> $GITHUB_ENV
-          else
-            git clone https://github.com/${SOURCE_REPO}.git source
-            echo "WORKING_DIR=$PWD/source" >> $GITHUB_ENV
+          set -euo pipefail
+          if [ -z "${EVENT_TYPE}" ]; then
+            echo "::error::repository_dispatch rejected: the dispatch carried no version payload"
+            exit 1
           fi
-
-      - name: Compute names
-        run: |
-          if [ "$TARGET_DEVICE" = "dl" ]; then
-            name=dl-${LEDE_VERSION}
-          else
-            name=lede-${LEDE_VERSION}-${TARGET_DEVICE}
+          if [ "${EVENT_TYPE}" != "${EXPECTED_VERSION}" ]; then
+            echo "::error::repository_dispatch rejected: event type '${EVENT_TYPE}' does not match version '${EXPECTED_VERSION}'"
+            exit 1
           fi
-          echo "OUTPUT_NAME=$name" >> $GITHUB_ENV
-          echo "OUTPUT_DIR=$WORKING_DIR/out" >> $GITHUB_ENV
+          echo "repository_dispatch verified: building version ${EXPECTED_VERSION}"
 
-      - name: Init build env
-        working-directory: ${{ env.WORKING_DIR }}
+  toolchain:
+    needs: [generate-matrix]
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.generate-matrix.outputs.tc-groups) }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@main
+
+      - name: Prepare the build environment
+        id: env
+        uses: ./.github/actions/setup-build-env
+        with:
+          source-repo: ${{ env.SOURCE_REPO }}
+          target: ${{ matrix.representative }}
+          group: ${{ matrix.group }}
+          tools-hash: ${{ needs.generate-matrix.outputs.tools-hash }}
+          key-suffix: ${{ inputs.force_toolchain && format('force-{0}', github.run_id) || 'v1' }}
+
+      - name: Restore the toolchain cache
+        id: restore
+        uses: actions/cache/restore@main
+        with:
+          path: |
+            ${{ steps.env.outputs.working-dir }}/staging_dir/host*
+            ${{ steps.env.outputs.working-dir }}/staging_dir/tool*
+          key: ${{ steps.env.outputs.cache-key }}
+
+      # tools/install and toolchain/install is exactly what the prepare
+      # stage of a full build would run, without touching target/ or
+      # package/. The representative device only supplies a .config that
+      # belongs to this toolchain group.
+      - name: Build the tools and the toolchain
+        if: steps.restore.outputs.cache-hit != 'true' || inputs.force_toolchain
+        working-directory: ${{ steps.env.outputs.working-dir }}
         run: |
-          sudo swapoff -a
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /mnt/swapfile
-          sudo apt-get update -qq -y
-          sudo apt-get install -qq -y \
-            aria2 build-essential bzip2 gettext flex perl \
-            findutils grep diffutils unzip gawk util-linux \
-            subversion zlib1g-dev zip
-          sudo .github/backup/install_python2.sh
-          sudo apt-get autoremove -qq -y
-          sudo apt-get clean -qq -y
+          set -euo pipefail
+          cp -f "conf/.config.${{ matrix.representative }}" .config
+          make defconfig
+          make -j"$(nproc)" tools/install toolchain/install
 
-          sed -i 's/HOST_BUILD_PARALLEL ?=/HOST_BUILD_PARALLEL ?= 1/g' include/host-build.mk
-          sed -i 's/PKG_BUILD_PARALLEL ?=/PKG_BUILD_PARALLEL ?= 1/g' include/package.mk
+      # Only on a miss: a cache entry is immutable, so re-saving a key that
+      # already exists would fail and a hit means this exact toolchain is
+      # already stored.
+      - name: Save the toolchain cache
+        if: steps.restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@main
+        with:
+          path: |
+            ${{ steps.env.outputs.working-dir }}/staging_dir/host*
+            ${{ steps.env.outputs.working-dir }}/staging_dir/tool*
+          key: ${{ steps.env.outputs.cache-key }}
 
-          rm -f "package/firmware/wireless-regdb/patches/501-limit-tx-power.patch"
+  download-sources:
+    needs: [generate-matrix]
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@main
 
-      - name: Toolchain cache key
-        if: ${{ env.TARGET_DEVICE != 'dl' }}
-        id: tc
-        working-directory: ${{ env.WORKING_DIR }}
+      - name: Prepare the build environment
+        id: env
+        uses: ./.github/actions/setup-build-env
+        with:
+          source-repo: ${{ env.SOURCE_REPO }}
+          tools-hash: ${{ needs.generate-matrix.outputs.tools-hash }}
+
+      # download_all.sh starts from clean_all.sh, which wipes dl/, so this
+      # job always downloads everything from scratch. It is the only writer
+      # of the dl cache; the device jobs only read it.
+      - name: Download every source tarball
+        working-directory: ${{ steps.env.outputs.working-dir }}
         run: |
-          arch=$(sed -n 's/^CONFIG_TARGET_BOARD="\(.*\)"/\1/p' conf/.config.$TARGET_DEVICE)
-          echo "key=$arch-$(gcc --version | sha1sum | cut -c1-8)" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          ./download_all.sh
 
-      - uses: HiGarfield/cachewrtbuild@main
-        if: ${{ env.TARGET_DEVICE != 'dl' }}
-        with:
-          ccache: true
-          mixkey: ${{ steps.tc.outputs.key }}
-          prefix: ${{ env.WORKING_DIR }}
-
-      - uses: actions/cache/restore@main
-        if: ${{ env.TARGET_DEVICE != 'dl' }}
-        with:
-          path: ${{ env.WORKING_DIR }}/dl
-          key: ${{ github.repository_id }}-dl-${{ github.run_id }}
-          restore-keys: ${{ github.repository_id }}-dl-
-
-      - name: Build
-        working-directory: ${{ env.WORKING_DIR }}
+      - name: Archive the source mirror
+        working-directory: ${{ steps.env.outputs.working-dir }}
         run: |
-          if [ "$TARGET_DEVICE" != "dl" ]; then
-            cp -f conf/.config.$TARGET_DEVICE .config
-            make defconfig
-            make -j$(nproc) || make -j1 V=s
-            mkdir -p $OUTPUT_DIR
-            for f in bin/targets/*/*/*-factory.bin \
-                     bin/targets/*/*/*-sysupgrade.bin \
-                     bin/targets/*/*/*-initramfs-kernel.bin; do
-              [ -f "$f" ] || continue
-              cp -u -f "$f" ${OUTPUT_DIR}/
-            done
-            echo "Collected images:"
-            ls -1 ${OUTPUT_DIR}/
-          else
-            ./download_all.sh
-            mkdir -p $OUTPUT_DIR
-            zip -j ${OUTPUT_DIR}/${OUTPUT_NAME}.zip dl/*
-          fi
+          set -euo pipefail
+          mkdir -p out
+          # Store instead of deflate: dl/ holds compressed tarballs already.
+          zip -0 -j "out/dl-${{ needs.generate-matrix.outputs.lede_version }}.zip" dl/*
 
-      - uses: actions/upload-artifact@main
+      - name: Upload the source mirror
+        uses: actions/upload-artifact@main
         with:
-          name: ${{ env.OUTPUT_NAME }}
-          path: ${{ env.OUTPUT_DIR }}/*
+          name: dl-${{ needs.generate-matrix.outputs.lede_version }}
+          path: ${{ steps.env.outputs.working-dir }}/out/*
+          retention-days: 2
 
-      - uses: actions/cache/save@main
-        if: ${{ env.TARGET_DEVICE == 'dl' }}
+      # A cache entry is immutable, so saving under a key that already
+      # exists fails. Look the key up first instead of downloading the
+      # tarballs: download_all.sh wipes dl/ anyway, so the only thing this
+      # job needs to know is whether the tree digest is already stored.
+      - name: Check whether the source mirror is already cached
+        id: lookup
+        uses: actions/cache/restore@main
         with:
-          path: ${{ env.WORKING_DIR }}/dl
-          key: ${{ github.repository_id }}-dl-${{ github.run_id }}
+          path: ${{ steps.env.outputs.working-dir }}/dl
+          key: dl-${{ needs.generate-matrix.outputs.dl-hash }}
+          lookup-only: true
 
-  create_release:
-    needs: [generate_matrix, build]
-    runs-on: ubuntu-24.04
+      - name: Save the source mirror cache
+        if: steps.lookup.outputs.cache-hit != 'true'
+        uses: actions/cache/save@main
+        with:
+          path: ${{ steps.env.outputs.working-dir }}/dl
+          key: dl-${{ needs.generate-matrix.outputs.dl-hash }}
+
+  build-firmware:
+    needs: [generate-matrix, toolchain]
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.generate-matrix.outputs.targets) }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@main
+
+      - name: Prepare the build environment
+        id: env
+        uses: ./.github/actions/setup-build-env
+        with:
+          source-repo: ${{ env.SOURCE_REPO }}
+          target: ${{ matrix.target }}
+          group: ${{ matrix.group }}
+          tools-hash: ${{ needs.generate-matrix.outputs.tools-hash }}
+          key-suffix: ${{ inputs.force_toolchain && format('force-{0}', github.run_id) || 'v1' }}
+          skip-toolchain-prereqs: 'true'
+
+      - name: Restore the toolchain cache
+        id: toolchain
+        uses: actions/cache/restore@main
+        with:
+          path: |
+            ${{ steps.env.outputs.working-dir }}/staging_dir/host*
+            ${{ steps.env.outputs.working-dir }}/staging_dir/tool*
+          key: ${{ steps.env.outputs.cache-key }}
+
+      # The toolchain job owns this key and the group ids come from the
+      # same action, so a miss means something is wrong (a different
+      # compiler, a changed tools/ tree, an evicted entry). Rebuilding
+      # here would hide it, and the Makefile no longer asks for the
+      # toolchain anyway.
+      - name: Verify the toolchain cache hit
+        if: steps.toolchain.outputs.cache-hit != 'true'
+        run: |
+          echo "::error::no toolchain cache entry for ${{ steps.env.outputs.cache-key }}"
+          exit 1
+
+      - name: Restore the source mirror cache
+        uses: actions/cache/restore@main
+        with:
+          path: ${{ steps.env.outputs.working-dir }}/dl
+          key: dl-${{ needs.generate-matrix.outputs.dl-hash }}
+          restore-keys: dl-
+
+      - name: Build the firmware
+        working-directory: ${{ steps.env.outputs.working-dir }}
+        run: |
+          set -euo pipefail
+          rm -f package/firmware/wireless-regdb/patches/501-limit-tx-power.patch
+          cp -f "conf/.config.${{ matrix.target }}" .config
+          make defconfig
+          make -j"$(nproc)" || make -j1 V=s
+
+      - name: Collect the firmware images
+        working-directory: ${{ steps.env.outputs.working-dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for f in bin/targets/*/*/*-factory.bin \
+                   bin/targets/*/*/*-sysupgrade.bin \
+                   bin/targets/*/*/*-initramfs-kernel.bin; do
+            [ -f "${f}" ] || continue
+            cp -u -f "${f}" out/
+          done
+          echo "Collected images:"
+          ls -1 out/
+
+      - name: Upload the firmware images
+        uses: actions/upload-artifact@main
+        with:
+          name: lede-${{ needs.generate-matrix.outputs.lede_version }}-${{ matrix.target }}
+          path: ${{ steps.env.outputs.working-dir }}/out/*
+          retention-days: 2
+
+  create-release:
+    needs: [generate-matrix, download-sources, build-firmware]
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@main
+      - name: Download every artifact
+        uses: actions/download-artifact@main
         with:
           path: artifacts
           merge-multiple: true
 
-      - uses: HiGarfield/action-gh-release@master
+      - name: Publish the release
+        uses: HiGarfield/action-gh-release@master
         with:
-          tag_name: ${{ needs.generate_matrix.outputs.lede_version }}
+          tag_name: ${{ needs.generate-matrix.outputs.lede_version }}
           files: artifacts/*
           make_latest: true
           overwrite_files: true
 
+  # create-release keeps make_latest, so the newest release is always the
+  # current build. This job drops the older ones, which would otherwise
+  # pile up one tag per push.
   cleanup:
-    needs: create_release
-    runs-on: ubuntu-24.04
+    needs: [create-release]
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
-      - uses: HiGarfield/delete-release-action@master
+      - name: Delete the superseded releases
+        uses: HiGarfield/delete-release-action@master
         continue-on-error: true
         with:
           release-drop: true
